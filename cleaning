@@ -1,0 +1,83 @@
+
+use "T:\My Documents\NLSY97\NLS97_2020\NLSY_87_smk_status.dta"
+//remove the variables after 2010
+drop YSAQ_360C_2011 YSAQ_360C_2013 YSAQ_360C_2015
+
+gen smkstat_1997 = YSAQ_359_1997
+
+//Take the maximum of two smoking variables where both exist
+foreach year in 1998 1999 2000 2004 2005{
+	egen smkstat_`year' = rowmax(YSAQ_359_`year' YSAQ_360C_`year')
+}
+
+//Set smoking status to value of YSAQ_360 
+//where it is the only smoking variable
+
+foreach year in 2001 2002 2003 2006 2007 2008 2009 2010{
+		gen smkstat_`year' = YSAQ_360C_`year'
+}
+
+misstable summ
+
+keep PUBID_1997 smkstat_1997- smkstat_2010
+save, replace
+
+//Merge the depression variables from another file
+use "T:\My Documents\NLSY97\NLS97_2020\NLSY_87_smk_status.dta"
+preserve
+use "T:\My Documents\NLSY97\NLS97_2020\nlsy_97.dta"
+ds YSAQ_282*
+local ysaq_vars `r(varlist)'
+restore
+merge 1:1 PUBID_1997 using "T:\My Documents\NLSY97\NLS97_2020\nlsy_97.dta", keepusing(`ysaq_vars')
+
+drop _merge
+
+save "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\smk_status_dep_revised.dta", replace
+
+//Now reverse code positively worded variables
+
+*282D: Calm/Peaceful
+foreach var of varlist YSAQ_282D_2000 YSAQ_282D_2002 YSAQ_282D_2004 YSAQ_282D_2006 YSAQ_282D_2008 YSAQ_282D_2010{
+	replace `var' = 5- `var'
+}
+
+*282F: Happy Person
+foreach var of varlist YSAQ_282F_2000 YSAQ_282F_2002 YSAQ_282F_2004 YSAQ_282F_2006 YSAQ_282F_2008 YSAQ_282F_2010 {
+	replace `var' = 5- `var'
+}
+
+
+//Count missing values in depression questions
+
+//Count missing values per row
+forvalues x = 2000(2)2010{
+	egen mh5_miss_`x' = rmiss(YSAQ_282C_`x' YSAQ_282D_`x' YSAQ_282E_`x' YSAQ_282F_`x' YSAQ_282G_`x')
+}
+
+misstable summ mh5_miss_2000-mh5_miss_2010
+
+//sum the questions for those with zero missing
+//Take the sum of 5 questions C-G
+forvalues x = 2000(2)2010{
+	egen mh5_`x'= rsum(YSAQ_282C_`x' YSAQ_282D_`x' YSAQ_282E_`x' YSAQ_282F_`x' YSAQ_282G_`x') if mh5_miss_`x'==0
+}
+
+drop  mh5_miss_2000- mh5_miss_2010 
+drop YSAQ_282C_2000- YSAQ_282G_2015
+
+save "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\smk_status_dep_revised.dta", replace
+
+//Merge peer smoking, age at baseline and sex
+merge 1:1 PUBID_1997 using "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\peers_smoking.dta", keepusing(YPRS_700_1997)
+drop _merge
+ren YPRS_700_1997 pct_peer_smk
+
+merge 1:1 PUBID_1997 using "T:\My Documents\NLSY97\NLS97_2020\nlsy_97.dta", keepusing(KEY_SEX_1997 CV_AGE_12_31_96_1997)
+drop _merge
+ren KEY_SEX_1997 sex
+ren CV_AGE_12_31_96_1997 age_in_1996
+
+order PUBID_1997 sex age_in_1996 pct_peer_smk
+
+save "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\smk_status_dep_revised.dta", replace
