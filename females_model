@@ -1,0 +1,149 @@
+
+library(dynamite)
+timing <- system.time({
+  smk_dep_females_fit <- dynamite(
+    dformula = model_formula,
+    data = lim_data_long_females,
+    time = "year",
+    group = "PUBID_1997",
+    chains = 5,
+    parallel_chains = 5,
+    threads_per_chain = 3,  # 5*3=15 cores
+    iter = 8000,
+    warmup = 4000,
+    thin = 1,
+    refresh = 100,
+    priors = required_priors_female,
+    control = list(adapt_delta = 0.99, max_treedepth = 15)
+  )
+  
+})
+save.image("smk_status_dep_modeling_females.RData")
+
+####Diagnostics
+library(bayesplot)
+
+fit_stan <- smk_dep_females_fit$stanfit
+
+# List all parameter names
+param_names <- dimnames(as.array(fit_stan))[[3]]
+param_names[1:50]  # show first 50
+
+
+mcmc_trace(fit_stan, pars = c("a_smkstat"))
+
+#Identify the worst ESS 
+library(bayesplot)
+library(posterior)
+
+trace_grid_worst <- function(fit, n_show = 9, rhat_thresh = 1.05, ess_thresh = 100) {
+  # Extract Stan fit from dynamite object if needed
+  fit_stan <- if ("stanfit" %in% names(fit)) fit$stanfit else fit
+  
+  # Summarize draws
+  summ <- summarize_draws(fit_stan)
+  
+  # Exclude deterministic parameters (NA ESS or R-hat)
+  summ_filtered <- subset(summ, !is.na(rhat) & !is.na(ess_bulk))
+  
+  # Identify problematic parameters
+  problem_params <- subset(
+    summ_filtered,
+    rhat > rhat_thresh | ess_bulk < ess_thresh | ess_tail < ess_thresh
+  )
+  
+  if (nrow(problem_params) == 0) {
+    message("No stochastic parameters exceed diagnostic thresholds.")
+    return(invisible(NULL))
+  }
+  
+  # Order by worst R-hat first, then lowest bulk ESS
+  problem_params <- problem_params[order(-problem_params$rhat, problem_params$ess_bulk), ]
+  
+  # Get top N parameters
+  top_vars <- head(problem_params$variable, n_show)
+  message("Top problematic parameters (stochastic only):")
+  print(problem_params[1:min(n_show, nrow(problem_params)), 
+                       c("variable", "rhat", "ess_bulk", "ess_tail")])
+  
+  # Trace plot grid
+  mcmc_trace(fit_stan, pars = top_vars, facet_args = list(ncol = 3))
+}
+
+trace_grid_worst(smk_dep_females_fit, n_show = 9)
+# 
+# Top problematic parameters:
+#   # A tibble: 8 × 4
+#   variable             rhat ess_bulk ess_tail
+# <chr>               <dbl>    <dbl>    <dbl>
+#   1 L_nu[2,1]            1.05     104.     440.
+# 2 L_nu[2,2]            1.05     104.     440.
+# 3 corr_matrix_nu[2,1]  1.05     104.     440.
+# 4 corr_matrix_nu[1,2]  1.05     104.     440.
+# 5 corr_nu[1]           1.05     104.     440.
+# 6 L_nu[1,1]           NA         NA       NA 
+# 7 L_nu[1,2]           NA         NA       NA 
+# 8 corr_matrix_nu[1,1] NA         NA       NA 
+
+#Tune the priors:
+priors_tuned <- required_priors_female
+
+# 1. Update sigma_nu priors to half-normal(0, 1)
+priors_tuned$prior[priors_tuned$type == "sigma_nu"] <- "normal(0, 1) T[0,]"
+
+# 2. Update the correlation matrix prior to LKJ(3)
+# This assumes your correlation is called corr_matrix_nu or similar in the model
+priors_tuned$prior[priors_tuned$type == "correlation"] <- "lkj_corr(3)"
+
+
+smk_dep_females_fit_tuned <- dynamite(
+  dformula = model_formula,
+  data = lim_data_long_females,
+  time = "year",
+  group = "PUBID_1997",
+  chains = 6,               # Increase chains to improve total ESS
+  parallel_chains = 6,
+  threads_per_chain = 1,
+  iter = 12000,             # 6k warmup + 6k post-warmup
+  warmup = 6000,
+  thin = 1,
+  refresh = 200,
+  priors = priors_tuned,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+###Need to fix the priors
+# 1. Half-normal(0, 0.5) for sigma_nu
+priors_tuned$prior[priors_tuned$type == "sigma_nu"] <- "normal(0, 0.5) T[0,]"
+
+# 2. LKJ(4) for the Cholesky factor of the correlation matrix
+# Replace lkj_corr_cholesky(1) with lkj_corr_cholesky(4)
+priors_tuned$prior[priors_tuned$type == "L"] <- "lkj_corr_cholesky(4)"
+
+# Check the updated priors
+priors_tuned
+
+
+#Fit again
+smk_dep_females_fit_tuned <- dynamite(
+  dformula = model_formula,
+  data = lim_data_long_females,
+  time = "year",
+  group = "PUBID_1997",
+  chains = 8,
+  parallel_chains = 8,
+  threads_per_chain = 1,
+  iter = 12000,       # 6k warmup + 6k post-warmup
+  warmup = 6000,
+  thin = 1,
+  refresh = 200,
+  priors = priors_tuned,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+trace_grid_worst(smk_dep_females_fit_tuned, n_show = 9)
+
+#OK
+
+saveRDS(smk_dep_females_fit_tuned, "smk_dep_females_model.rds")
