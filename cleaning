@@ -35,7 +35,22 @@ drop _merge
 
 save "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\smk_status_dep_revised.dta", replace
 
+**********************************************************************************
+//The depression questions are from the Mental Health Inventory-5
+//by Berwick et al. 
+// Performance of a five-item mental health screening test. Med Care, 29, 169-76.
+//The response categories are: 1 = All of the time; 2 = Most of the time; 3 = Some of the time; 4 = None of the time
+//The actual questions are: 
+//282-C: BEEN A NERVOUS PERSON IN PAST MONTH
+//282-D: HOW OFTEN R FELT CALM AND PEACEFUL IN PAST MONTH *Reverse Code*
+//282-E: DOWN OR BLUE IN PAST MONTH
+//282-F: A HAPPY PERSON IN PAST MONTH *Reverse Code*
+//282-G: DEPRESSED IN LAST MONTH
+
+//The sum of the items after reverse coding (+)-worded ones is in a higher-is-better format. Berwick suggests a 16/17 cutoff. See also
+// Yamazaki et al. (2005);  Strand et al. (2003); Kelly et al. (2008)
 //Now reverse code positively worded variables
+**********************************************************************************
 
 *282D: Calm/Peaceful
 foreach var of varlist YSAQ_282D_2000 YSAQ_282D_2002 YSAQ_282D_2004 YSAQ_282D_2006 YSAQ_282D_2008 YSAQ_282D_2010{
