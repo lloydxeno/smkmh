@@ -146,4 +146,104 @@ trace_grid_worst(smk_dep_females_fit_tuned, n_show = 9)
 
 #OK
 
-saveRDS(smk_dep_females_fit_tuned, "smk_dep_females_model.rds")
+#############################Build a Prediction Model for CESD 2019 depression##################
+#############################Using the Random MH and Smoking Intercepts#########################
+
+
+#Extract random effects per person
+
+library(dynamite)
+
+#Retrieve parameter names because Stan 
+#calls them something else
+param_names
+grep("nu_", param_names, value = TRUE)
+grep("nu_mh", param_names, value = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(posterior)
+
+draws <- as_draws_df(smk_dep_females_fit_tuned$stanfit)
+
+# 1) Make an index -> PUBID map in the SAME order used by the model data
+idx_map <- lim_data_long_females %>%
+  distinct(PUBID_1997) %>%
+  mutate(i = row_number())   # i = person index used in Stan
+
+# 2) Extract first index i from parameter names like "nu_smkstat[123,1]"
+ri_smk <- draws %>%
+  select(starts_with("nu_smkstat[")) %>%
+  summarise(across(everything(), mean)) %>%
+  pivot_longer(everything(), names_to = "param", values_to = "ri_smk") %>%
+  mutate(i = as.integer(str_extract(param, "(?<=\\[)\\d+"))) %>%
+  select(i, ri_smk) %>%
+  inner_join(idx_map, by = "i") %>%
+  select(PUBID_1997, ri_smk)
+
+ri_mh <- draws %>%
+  select(starts_with("nu_mh5[")) %>%
+  summarise(across(everything(), mean)) %>%
+  pivot_longer(everything(), names_to = "param", values_to = "ri_mh") %>%
+  mutate(i = as.integer(str_extract(param, "(?<=\\[)\\d+"))) %>%
+  select(i, ri_mh) %>%
+  inner_join(idx_map, by = "i") %>%
+  select(PUBID_1997, ri_mh)
+
+# 3) Join both effects
+ri_both_effects <- ri_smk %>% inner_join(ri_mh, by = "PUBID_1997")
+
+# 4) Merge the above with the lim_data_long_females
+
+# Reduce to unique PUBID_1997 with fixed variables
+fixed_vars <- lim_data_long_females %>%
+  distinct(PUBID_1997, pct_peer_smk, age)
+
+# Merge with random intercepts
+ri_data_females <- ri_both_effects %>%
+  inner_join(fixed_vars, by = "PUBID_1997")
+
+# Check result
+head(ri_data_females)
+nrow(ri_data_females)  # should match number of unique PUBID_1997 in ri_both
+
+
+
+#Export random intercepts and lim_data_long_females to another df to save disk space
+save(ri_data_females,
+     file = "ri_effects_females.RData")
+
+#
+load("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/Smk_Depression/ri_effects_females.RData")
+
+
+#####Now import the CESD-19 scores
+cesd_2019 <- read_dta("cesd_2019.dta")
+
+library(dplyr)
+
+ri_data_females <- ri_data_females %>%
+  left_join(
+    cesd_2019 %>% 
+      select(PUBID_1997, CV_CESD_SCORE_R19_2019),
+    by = "PUBID_1997"
+  )
+
+###Regression model
+library(dplyr)
+
+# Make sure data is complete for these variables
+ri_data_females_clean <- ri_data_females %>%
+  filter(!is.na(CV_CESD_SCORE_R19_2019))
+
+# Fit linear regression
+cesd_model_females <- lm(
+  log(CV_CESD_SCORE_R19_2019 + 1) ~ ri_smk + ri_mh + pct_peer_smk + age,
+  data = ri_data_females_clean
+)
+
+# View results
+summary(cesd_model_females)
+
+
