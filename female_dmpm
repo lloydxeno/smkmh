@@ -1,0 +1,155 @@
+library(DiagrammeR)
+
+grViz("
+digraph crosslag {
+  
+  graph [rankdir = LR, splines=true, overlap=false]
+  
+  #-------------------------
+  # Nodes
+  #-------------------------
+  
+  # MH nodes (top row) – turquoise4 text and border
+  node [shape = box, style = rounded, fontsize = 10, fontcolor = 'turquoise4', color = 'turquoise4']
+  MH_2000 [label = 'MH_2000']
+  MH_2002 [label = 'MH_2002']
+  MH_2004 [label = 'MH_2004']
+  MH_2006 [label = 'MH_2006']
+  MH_2008 [label = 'MH_2008']
+  MH_2010 [label = 'MH_2010']
+  
+  # SmkStat nodes (bottom row) – blue4 text and border
+  node [shape = box, style = rounded, fontsize = 10, fontcolor = 'blue4', color = 'blue4']
+  Smk_2000 [label = 'SmkStat_2000']
+  Smk_2002 [label = 'SmkStat_2002']
+  Smk_2004 [label = 'SmkStat_2004']
+  Smk_2006 [label = 'SmkStat_2006']
+  Smk_2008 [label = 'SmkStat_2008']
+  Smk_2010 [label = 'SmkStat_2010']
+  
+  # Random intercepts and MH residuals (circles)
+  node [shape = circle, fontsize = 10, fontcolor = 'black', color = 'black']
+  RI_MH   [label = 'RI_MH\\n(σ = 0.010)']
+  RI_Smk  [label = 'RI_Smk\\n(σ = 0.024)']
+  
+  eps_2000 [label = 'ε (σ=1.70)']
+  eps_2002 [label = 'ε']
+  eps_2004 [label = 'ε']
+  eps_2006 [label = 'ε']
+  eps_2008 [label = 'ε']
+  eps_2010 [label = 'ε']
+  
+  #-------------------------
+  # Layout: keep MH & Smk in vertical pairs
+  #-------------------------
+  {rank = same; MH_2000; Smk_2000}
+  {rank = same; MH_2002; Smk_2002}
+  {rank = same; MH_2004; Smk_2004}
+  {rank = same; MH_2006; Smk_2006}
+  {rank = same; MH_2008; Smk_2008}
+  {rank = same; MH_2010; Smk_2010}
+  
+  #-------------------------
+  # Autoregressive paths
+  #-------------------------
+  
+  # MH (beta_mh5_mh5_lag_w = -0.0693)
+  MH_2000 -> MH_2002 [color = 'turquoise4', penwidth = 1.4,
+                      label='-0.07', fontsize=9]
+  MH_2002 -> MH_2004 [color = 'turquoise4', penwidth = 1.4,
+                      label='-0.07', fontsize=9]
+  MH_2004 -> MH_2006 [color = 'turquoise4', penwidth = 1.4,
+                      label='-0.07', fontsize=9]
+  MH_2006 -> MH_2008 [color = 'turquoise4', penwidth = 1.4,
+                      label='-0.07', fontsize=9]
+  MH_2008 -> MH_2010 [color = 'turquoise4', penwidth = 1.4,
+                      label='-0.07', fontsize=9]
+  
+  # SmkStat (beta_smkstat_smkstat_lag_w = -0.0446)
+  Smk_2000 -> Smk_2002 [color = 'blue4', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  Smk_2002 -> Smk_2004 [color = 'blue4', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  Smk_2004 -> Smk_2006 [color = 'blue4', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  Smk_2006 -> Smk_2008 [color = 'blue4', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  Smk_2008 -> Smk_2010 [color = 'blue4', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  
+  #-------------------------
+  # Cross-lagged paths
+  #-------------------------
+  # MH -> SmkStat (beta_smkstat_mh5_lag_w = -0.0433)
+  MH_2000  -> Smk_2002 [color = 'brown3', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  MH_2002  -> Smk_2004 [color = 'brown3', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  MH_2004  -> Smk_2006 [color = 'brown3', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  MH_2006  -> Smk_2008 [color = 'brown3', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  MH_2008  -> Smk_2010 [color = 'brown3', penwidth = 1.4,
+                        label='-0.04', fontsize=9]
+  
+  # SmkStat -> MH (beta_mh5_smkstat_lag_w = 0.124)
+  Smk_2000 -> MH_2002 [color = 'brown3', penwidth = 1.4,
+                       label='0.12', fontsize=9]
+  Smk_2002 -> MH_2004 [color = 'brown3', penwidth = 1.4,
+                       label='0.12', fontsize=9]
+  Smk_2004 -> MH_2006 [color = 'brown3', penwidth = 1.4,
+                       label='0.12', fontsize=9]
+  Smk_2006 -> MH_2008 [color = 'brown3', penwidth = 1.4,
+                       label='0.12', fontsize=9]
+  Smk_2008 -> MH_2010 [color = 'brown3', penwidth = 1.4,
+                       label='0.12', fontsize=9]
+  
+  #-------------------------
+  # MH residuals (only for MH)
+  #-------------------------
+  
+  eps_2000 -> MH_2000 [color = 'black']
+  eps_2002 -> MH_2002 [color = 'black']
+  eps_2004 -> MH_2004 [color = 'black']
+  eps_2006 -> MH_2006 [color = 'black']
+  eps_2008 -> MH_2008 [color = 'black']
+  eps_2010 -> MH_2010 [color = 'black']
+  
+  #-------------------------
+  # Random intercepts
+  #-------------------------
+  
+  # RI_MH -> all MH waves (dash-dot lines)
+  RI_MH -> MH_2000 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  RI_MH -> MH_2002 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  RI_MH -> MH_2004 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  RI_MH -> MH_2006 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  RI_MH -> MH_2008 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  RI_MH -> MH_2010 [color = 'gray40', penwidth = 1.2, label='1',
+                    fontsize=8, style='dashdot']
+  
+  # RI_Smk -> all Smk waves (dashed lines)
+  RI_Smk -> Smk_2000 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  RI_Smk -> Smk_2002 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  RI_Smk -> Smk_2004 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  RI_Smk -> Smk_2006 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  RI_Smk -> Smk_2008 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  RI_Smk -> Smk_2010 [color = 'gray40', penwidth = 1.2, label='1',
+                      fontsize=8, style='dashed']
+  
+  # Correlation between random intercepts
+  RI_MH -> RI_Smk [dir = both, arrowhead = none, arrowtail = none,
+                   color = 'gray40', penwidth = 1.2,
+                   label='corr ≈ 0.00', fontsize=9]
+}
+")
