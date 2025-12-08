@@ -1,249 +1,232 @@
-
 library(dynamite)
-timing <- system.time({
-  smk_dep_females_fit <- dynamite(
-    dformula = model_formula,
-    data = lim_data_long_females,
-    time = "year",
-    group = "PUBID_1997",
-    chains = 5,
-    parallel_chains = 5,
-    threads_per_chain = 3,  # 5*3=15 cores
-    iter = 8000,
-    warmup = 4000,
-    thin = 1,
-    refresh = 100,
-    priors = required_priors_female,
-    control = list(adapt_delta = 0.99, max_treedepth = 15)
+library(dplyr)
+load("nlsy_females_long.RData")
+
+lim_data_long_females <- lim_data_long_females %>%
+  arrange(PUBID_1997, year) %>%
+  group_by(PUBID_1997) %>%
+  mutate(
+    smkstat_lag = lag(smkstat, default = 0),
+    mh5_lag = lag(mh5, default = 15),
+
+    #Mean Smoking / MH levels per person
+    smkstat_bar = mean(smkstat, na.rm = TRUE),
+    mh5_bar = mean(mh5, na.rm = TRUE),
+    
+    smkstat_lag_w = smkstat_lag - smkstat_bar,
+    mh5_lag_w     = mh5_lag - mh5_bar
+  ) %>%
+  ungroup()
+
+model_formula <- 
+  # Smoking (Bernoulli)
+  obs(
+    smkstat ~ smkstat_lag_w + mh5_lag_w + smkstat_bar + mh5_bar +
+      pct_peer_smk + age + random(~1),
+    family = "bernoulli"
+  ) +
+  
+  # Mental health (Gaussian)
+  obs(
+    mh5 ~ mh5_lag_w + smkstat_lag_w + smkstat_bar + mh5_bar +
+      pct_peer_smk + age + random(~1),
+    family = "gaussian"
   )
-  
-})
-save.image("smk_status_dep_modeling_females.RData")
 
-####Diagnostics
-library(bayesplot)
-
-fit_stan <- smk_dep_females_fit$stanfit
-
-# List all parameter names
-param_names <- dimnames(as.array(fit_stan))[[3]]
-param_names[1:50]  # show first 50
-
-
-mcmc_trace(fit_stan, pars = c("a_smkstat"))
-
-#Identify the worst ESS 
-library(bayesplot)
-library(posterior)
-
-trace_grid_worst <- function(fit, n_show = 9, rhat_thresh = 1.05, ess_thresh = 100) {
-  # Extract Stan fit from dynamite object if needed
-  fit_stan <- if ("stanfit" %in% names(fit)) fit$stanfit else fit
-  
-  # Summarize draws
-  summ <- summarize_draws(fit_stan)
-  
-  # Exclude deterministic parameters (NA ESS or R-hat)
-  summ_filtered <- subset(summ, !is.na(rhat) & !is.na(ess_bulk))
-  
-  # Identify problematic parameters
-  problem_params <- subset(
-    summ_filtered,
-    rhat > rhat_thresh | ess_bulk < ess_thresh | ess_tail < ess_thresh
-  )
-  
-  if (nrow(problem_params) == 0) {
-    message("No stochastic parameters exceed diagnostic thresholds.")
-    return(invisible(NULL))
-  }
-  
-  # Order by worst R-hat first, then lowest bulk ESS
-  problem_params <- problem_params[order(-problem_params$rhat, problem_params$ess_bulk), ]
-  
-  # Get top N parameters
-  top_vars <- head(problem_params$variable, n_show)
-  message("Top problematic parameters (stochastic only):")
-  print(problem_params[1:min(n_show, nrow(problem_params)), 
-                       c("variable", "rhat", "ess_bulk", "ess_tail")])
-  
-  # Trace plot grid
-  mcmc_trace(fit_stan, pars = top_vars, facet_args = list(ncol = 3))
-}
-
-trace_grid_worst(smk_dep_females_fit, n_show = 9)
-# 
-# Top problematic parameters:
-#   # A tibble: 8 × 4
-#   variable             rhat ess_bulk ess_tail
-# <chr>               <dbl>    <dbl>    <dbl>
-#   1 L_nu[2,1]            1.05     104.     440.
-# 2 L_nu[2,2]            1.05     104.     440.
-# 3 corr_matrix_nu[2,1]  1.05     104.     440.
-# 4 corr_matrix_nu[1,2]  1.05     104.     440.
-# 5 corr_nu[1]           1.05     104.     440.
-# 6 L_nu[1,1]           NA         NA       NA 
-# 7 L_nu[1,2]           NA         NA       NA 
-# 8 corr_matrix_nu[1,1] NA         NA       NA 
-
-#Tune the priors:
-priors_tuned <- required_priors_female
-
-# 1. Update sigma_nu priors to half-normal(0, 1)
-priors_tuned$prior[priors_tuned$type == "sigma_nu"] <- "normal(0, 1) T[0,]"
-
-# 2. Update the correlation matrix prior to LKJ(3)
-# This assumes your correlation is called corr_matrix_nu or similar in the model
-priors_tuned$prior[priors_tuned$type == "correlation"] <- "lkj_corr(3)"
-
-
-smk_dep_females_fit_tuned <- dynamite(
-  dformula = model_formula,
-  data = lim_data_long_females,
-  time = "year",
-  group = "PUBID_1997",
-  chains = 6,               # Increase chains to improve total ESS
-  parallel_chains = 6,
-  threads_per_chain = 1,
-  iter = 12000,             # 6k warmup + 6k post-warmup
-  warmup = 6000,
-  thin = 1,
-  refresh = 200,
-  priors = priors_tuned,
-  control = list(adapt_delta = 0.99, max_treedepth = 15)
+required_priors_female <- get_priors(
+  model_formula,
+  data  = lim_data_long_females,
+  time  = "year",
+  group = "PUBID_1997"
 )
 
-###Need to fix the priors
-# 1. Half-normal(0, 0.5) for sigma_nu
-priors_tuned$prior[priors_tuned$type == "sigma_nu"] <- "normal(0, 0.5) T[0,]"
+p <- required_priors_female
 
-# 2. LKJ(4) for the Cholesky factor of the correlation matrix
-# Replace lkj_corr_cholesky(1) with lkj_corr_cholesky(4)
-priors_tuned$prior[priors_tuned$type == "L"] <- "lkj_corr_cholesky(4)"
+## Smoking (Bernoulli)
+p$prior[p$parameter == "alpha_smkstat"]              <- "normal(-2, 1.0)"          # baseline smoking log-odds low
+p$prior[p$parameter == "beta_smkstat_smkstat_lag_w"] <- "normal(1.0, 0.5)"         # strong persistence (within)
+p$prior[p$parameter == "beta_smkstat_mh5_lag_w"]     <- "normal(0.34, 0.2)"        # depression → later smoking
+p$prior[p$parameter == "beta_smkstat_smkstat_bar"]   <- "normal(1.0, 0.5)"         # between-person persistence
+p$prior[p$parameter == "beta_smkstat_mh5_bar"]       <- "normal(0.34, 0.2)"
+p$prior[p$parameter == "beta_smkstat_pct_peer_smk"]  <- "normal(0.10, 0.05)"
+p$prior[p$parameter == "beta_smkstat_age"]           <- "normal(0, 0.5)"
+p$prior[p$parameter == "sigma_nu_smkstat_alpha"]     <- "normal(0, 1)"
 
-# Check the updated priors
-priors_tuned
+## Mental health (Gaussian)
+p$prior[p$parameter == "alpha_mh5"]                  <- "normal(15, 3)"            # around mean MH
+p$prior[p$parameter == "beta_mh5_mh5_lag_w"]         <- "normal(0.6, 0.1)"         # strong autocorrelation
+p$prior[p$parameter == "beta_mh5_smkstat_lag_w"]     <- "normal(0.53, 0.2)"        # smoking → later depression
+p$prior[p$parameter == "beta_mh5_mh5_bar"]           <- "normal(0.6, 0.1)"
+p$prior[p$parameter == "beta_mh5_smkstat_bar"]       <- "normal(0.53, 0.2)"
+p$prior[p$parameter == "beta_mh5_pct_peer_smk"]      <- "normal(0, 0.05)"
+p$prior[p$parameter == "beta_mh5_age"]               <- "normal(0, 1.0)"
+p$prior[p$parameter == "sigma_mh5"]                  <- "exponential(0.1)"
 
+## Random effect correlation structure
+p$prior[p$parameter == "L_nu"] <- "lkj_corr_cholesky(2)"
 
-#Fit again
-smk_dep_females_fit_tuned <- dynamite(
-  dformula = model_formula,
-  data = lim_data_long_females,
-  time = "year",
-  group = "PUBID_1997",
-  chains = 8,
-  parallel_chains = 8,
-  threads_per_chain = 1,
-  iter = 12000,       # 6k warmup + 6k post-warmup
-  warmup = 6000,
-  thin = 1,
-  refresh = 200,
-  priors = priors_tuned,
-  control = list(adapt_delta = 0.99, max_treedepth = 15)
+required_priors_female <- p
+
+smk_dep_females_fit <- dynamite(
+  dformula         = model_formula,
+  data             = lim_data_long_females,
+  time             = "year",
+  group            = "PUBID_1997",
+  priors           = required_priors_female,
+  chains           = 4,
+  parallel_chains  = 4,
+  threads_per_chain= 5,
+  iter             = 4000,
+  warmup           = 2000,
+  refresh          = 100
 )
+save.image("female_model.RData")
 
-
-trace_grid_worst(smk_dep_females_fit_tuned, n_show = 9)
-
-#OK
-
-#############################Build a Prediction Model for CESD 2019 depression##################
-#############################Using the Random MH and Smoking Intercepts#########################
-
-
-#Extract random effects per person
-
+#############################Post-estimation to Predict Distal Depression Outcome#################
 library(dynamite)
-
-#Retrieve parameter names because Stan 
-#calls them something else
-param_names
-grep("nu_", param_names, value = TRUE)
-grep("nu_mh", param_names, value = TRUE)
-
+library(posterior)  # for as_draws_df
 library(dplyr)
 library(tidyr)
 library(stringr)
-library(posterior)
-
-draws <- as_draws_df(smk_dep_females_fit_tuned$stanfit)
-
-# 1) Make an index -> PUBID map in the SAME order used by the model data
-idx_map <- lim_data_long_females %>%
-  distinct(PUBID_1997) %>%
-  mutate(i = row_number())   # i = person index used in Stan
-
-# 2) Extract first index i from parameter names like "nu_smkstat[123,1]"
-ri_smk <- draws %>%
-  select(starts_with("nu_smkstat[")) %>%
-  summarise(across(everything(), mean)) %>%
-  pivot_longer(everything(), names_to = "param", values_to = "ri_smk") %>%
-  mutate(i = as.integer(str_extract(param, "(?<=\\[)\\d+"))) %>%
-  select(i, ri_smk) %>%
-  inner_join(idx_map, by = "i") %>%
-  select(PUBID_1997, ri_smk)
-
-ri_mh <- draws %>%
-  select(starts_with("nu_mh5[")) %>%
-  summarise(across(everything(), mean)) %>%
-  pivot_longer(everything(), names_to = "param", values_to = "ri_mh") %>%
-  mutate(i = as.integer(str_extract(param, "(?<=\\[)\\d+"))) %>%
-  select(i, ri_mh) %>%
-  inner_join(idx_map, by = "i") %>%
-  select(PUBID_1997, ri_mh)
-
-# 3) Join both effects
-ri_both_effects <- ri_smk %>% inner_join(ri_mh, by = "PUBID_1997")
-
-# 4) Merge the above with the lim_data_long_females
-
-# Reduce to unique PUBID_1997 with fixed variables
-fixed_vars <- lim_data_long_females %>%
-  distinct(PUBID_1997, pct_peer_smk, age)
-
-# Merge with random intercepts
-ri_data_females <- ri_both_effects %>%
-  inner_join(fixed_vars, by = "PUBID_1997")
-
-# Check result
-head(ri_data_females)
-nrow(ri_data_females)  # should match number of unique PUBID_1997 in ri_both
+library(haven)
 
 
 
-#Export random intercepts and lim_data_long_females to another df to save disk space
-save(ri_data_females,
-     file = "ri_effects_females.RData")
-
-#
-load("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/Smk_Depression/ri_effects_females.RData")
-
-
-#####Now import the CESD-19 scores
 cesd_2019 <- read_dta("cesd_2019.dta")
+cesd_2019 <- rename(cesd_2019, cesd2019 = CV_CESD_SCORE_R19_2019)
+draws_mat <- as_draws_matrix(smk_dep_females_fit$stanfit)
 
-library(dplyr)
+# Define variable names for both outcomes
+vars_mh5 <- c("mh5_lag_w","smkstat_lag_w","smkstat_bar","mh5_bar","pct_peer_smk","age")
+vars_smk <- c("smkstat_lag_w","mh5_lag_w","smkstat_bar","mh5_bar","pct_peer_smk","age")
 
-ri_data_females <- ri_data_females %>%
-  left_join(
-    cesd_2019 %>% 
-      select(PUBID_1997, CV_CESD_SCORE_R19_2019),
-    by = "PUBID_1997"
+
+
+# Posterior means of the dynamite parameters (for building the regression dataset)
+summ <- summarise_draws(draws_mat, "mean")
+
+alpha_mh5_bar <- summ$mean[str_detect(summ$variable, "^alpha_mh5$")]
+alpha_smk_bar <- summ$mean[str_detect(summ$variable, "^alpha_smkstat$")]
+
+beta_mh5_bar <- summ$mean[str_detect(summ$variable, "^beta_mh5\\[")][1:length(vars_mh5)]
+names(beta_mh5_bar) <- vars_mh5
+
+beta_smk_bar <- summ$mean[str_detect(summ$variable, "^beta_smkstat\\[")][1:length(vars_smk)]
+names(beta_smk_bar) <- vars_smk
+
+# Build predictors for regression
+df_model <- as.data.frame(df_model)
+
+X_mh5 <- as.matrix(df_model[, vars_mh5, drop = FALSE])
+X_smk <- as.matrix(df_model[, vars_smk, drop = FALSE])
+
+df_model <- df_model %>%
+  mutate(
+    mh5_pred = as.numeric(alpha_mh5_bar + X_mh5 %*% beta_mh5_bar),
+    smk_pred = plogis(as.numeric(alpha_smk_bar + X_smk %*% beta_smk_bar))
   )
 
-###Regression model
-library(dplyr)
+analysis_df <- inner_join(df_model, cesd_2019, by = "PUBID_1997")
 
-# Make sure data is complete for these variables
-ri_data_females_clean <- ri_data_females %>%
-  filter(!is.na(CV_CESD_SCORE_R19_2019))
+library(brms)
 
-# Fit linear regression
-cesd_model_females <- lm(
-  log(CV_CESD_SCORE_R19_2019 + 1) ~ ri_smk + ri_mh + pct_peer_smk + age,
-  data = ri_data_females_clean
+bayes_model_2019 <- brm(
+  cesd2019 ~ mh5_pred + smk_pred,
+  data = analysis_df,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0,10), class = "Intercept"),
+    prior(normal(0,10), class = "b"),
+    prior(exponential(1), class = "sigma")
+  ),
+  chains = 4, iter = 4000, warmup = 1000, seed = 1234, cores = 4
 )
 
-# View results
-summary(cesd_model_females)
+post_reg <- as_draws_matrix(bayes_model_2019)
+# Columns typically: "b_Intercept", "b_mh5_pred", "b_smk_pred", "sigma"
+# Then map:
+# b_ols_j <- c(post_reg[k, "b_Intercept"], post_reg[k, "b_mh5_pred"], post_reg[k, "b_smk_pred"])
 
+
+
+set.seed(2025)
+
+# Column names to pull from draws_mat
+col_alpha_mh5 <- "alpha_mh5"
+col_alpha_smk <- "alpha_smkstat"
+mh5_betas_all <- grep("^beta_mh5\\[",   colnames(draws_mat), value = TRUE)
+smk_betas_all <- grep("^beta_smkstat\\[", colnames(draws_mat), value = TRUE)
+
+# Scenarios (stay in data.frame land to avoid data.table pitfalls)
+scenario1 <- as.data.frame(df_model) %>% mutate(smkstat_bar = 1, smkstat_lag_w = 1)
+scenario0 <- as.data.frame(df_model) %>% mutate(smkstat_bar = 0, smkstat_lag_w = 0)
+
+# Helper: compute mh5_pred, smk_pred, cesd_hat from one pair of (dynamite params, regression coefs)
+compute_pred <- function(df, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j) {
+  # Ensure numeric matrices
+  X_mh5 <- df[, names(beta_mh5_vec_j), drop = FALSE] %>% mutate(across(everything(), as.numeric)) %>% as.matrix()
+  X_smk <- df[, names(beta_smk_vec_j), drop = FALSE] %>% mutate(across(everything(), as.numeric)) %>% as.matrix()
+  
+  mh5_pred <- as.numeric(alpha_mh5_j + X_mh5 %*% beta_mh5_vec_j)
+  smk_pred <- plogis(as.numeric(alpha_smk_j + X_smk %*% beta_smk_vec_j))
+  cesd_hat <- as.numeric(b_ols_j[1] + b_ols_j[2]*mh5_pred + b_ols_j[3]*smk_pred)
+  
+  tibble::tibble(PUBID_1997 = df$PUBID_1997, cesd_hat = cesd_hat)
+}
+
+# Draw counts
+R <- 500L
+idx_dyn <- sample(seq_len(nrow(draws_mat)), size = R, replace = FALSE)
+idx_reg <- sample(seq_len(nrow(post_reg)),  size = R, replace = TRUE)  # regression draws
+
+delta_means <- numeric(R)
+
+for (r in seq_len(R)) {
+  j <- idx_dyn[r]
+  k <- idx_reg[r]
+  
+  # --- Dynamite parameters (FORCE to numeric scalars/vectors)
+  alpha_mh5_j <- as.numeric(draws_mat[j, col_alpha_mh5])
+  alpha_smk_j <- as.numeric(draws_mat[j, col_alpha_smk])
+  
+  # Align beta vectors to your predictor order
+  # (We expect 6; if not, clamp using min(...) )
+  n_mh5 <- min(length(mh5_betas_all), length(vars_mh5))
+  n_smk <- min(length(smk_betas_all), length(vars_smk))
+  
+  beta_mh5_vec_j <- as.numeric(draws_mat[j, mh5_betas_all[1:n_mh5]])
+  beta_smk_vec_j <- as.numeric(draws_mat[j, smk_betas_all[1:n_smk]])
+  names(beta_mh5_vec_j) <- vars_mh5[1:n_mh5]
+  names(beta_smk_vec_j) <- vars_smk[1:n_smk]
+  
+  # --- Regression coefficients (one posterior draw)
+  b_ols_j <- c(
+    post_reg[k, "b_Intercept"],
+    post_reg[k, "b_mh5_pred"],
+    post_reg[k, "b_smk_pred"]
+  )
+  
+  # --- Predictions in both worlds
+  p1 <- compute_pred(scenario1, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j)
+  p0 <- compute_pred(scenario0, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j)
+  
+  # Average within person; align IDs across scenarios
+  p1_person <- p1 %>% group_by(PUBID_1997) %>% summarise(cesd_hat_mean = mean(cesd_hat), .groups = "drop")
+  p0_person <- p0 %>% group_by(PUBID_1997) %>% summarise(cesd_hat_mean = mean(cesd_hat), .groups = "drop")
+  common_ids <- intersect(p1_person$PUBID_1997, p0_person$PUBID_1997)
+  if (length(common_ids) == 0L) { delta_means[r] <- NA_real_; next }
+  
+  cf_df <- inner_join(p1_person, p0_person, by = "PUBID_1997", suffix = c("_smoke1", "_smoke0")) %>%
+    mutate(delta = cesd_hat_mean_smoke1 - cesd_hat_mean_smoke0)
+  
+  delta_means[r] <- mean(cf_df$delta, na.rm = TRUE)
+}
+
+delta_means <- delta_means[!is.na(delta_means)]
+ci_delta <- quantile(delta_means, c(0.025, 0.975))
+mean_delta <- mean(delta_means)
+
+c(mean = mean_delta, `2.5%` = ci_delta[1], `97.5%` = ci_delta[2])
+
+save.image("~/Documents/NLSY/females_post.RData")
 
