@@ -1,3 +1,5 @@
+#The code below uses the estimates from females_model
+
 library(DiagrammeR)
 
 grViz("
