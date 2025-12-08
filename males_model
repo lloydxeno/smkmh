@@ -92,4 +92,153 @@ smk_dep_males_fit <- dynamite(
 
 save.image("male_model.RData")
 
-###########################
+#############################Post-estimation to Predict Distal Depression Outcome#################
+library(dynamite)
+library(posterior)  # for as_draws_df
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(haven)
+
+
+
+cesd_2019 <- read_dta("cesd_2019.dta")
+cesd_2019 <- rename(cesd_2019, cesd2019 = CV_CESD_SCORE_R19_2019)
+draws_mat <- as_draws_matrix(smk_dep_males_fit$stanfit)
+
+# Define variable names for both outcomes
+vars_mh5 <- c("mh5_lag_w","smkstat_lag_w","smkstat_bar","mh5_bar","pct_peer_smk","age")
+vars_smk <- c("smkstat_lag_w","mh5_lag_w","smkstat_bar","mh5_bar","pct_peer_smk","age")
+
+
+# Assuming the following objects are present
+
+
+# Posterior means of the dynamite parameters (for building the regression dataset)
+summ <- summarise_draws(draws_mat, "mean")
+
+alpha_mh5_bar <- summ$mean[str_detect(summ$variable, "^alpha_mh5$")]
+alpha_smk_bar <- summ$mean[str_detect(summ$variable, "^alpha_smkstat$")]
+
+beta_mh5_bar <- summ$mean[str_detect(summ$variable, "^beta_mh5\\[")][1:length(vars_mh5)]
+names(beta_mh5_bar) <- vars_mh5
+
+beta_smk_bar <- summ$mean[str_detect(summ$variable, "^beta_smkstat\\[")][1:length(vars_smk)]
+names(beta_smk_bar) <- vars_smk
+
+# Build predictors for regression
+df_model <- as.data.frame(df_model)
+
+X_mh5 <- as.matrix(df_model[, vars_mh5, drop = FALSE])
+X_smk <- as.matrix(df_model[, vars_smk, drop = FALSE])
+
+df_model <- df_model %>%
+  mutate(
+    mh5_pred = as.numeric(alpha_mh5_bar + X_mh5 %*% beta_mh5_bar),
+    smk_pred = plogis(as.numeric(alpha_smk_bar + X_smk %*% beta_smk_bar))
+  )
+
+analysis_df <- inner_join(df_model, cesd_2019, by = "PUBID_1997")
+
+library(brms)
+
+bayes_model_2019 <- brm(
+  cesd2019 ~ mh5_pred + smk_pred,
+  data = analysis_df,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0,10), class = "Intercept"),
+    prior(normal(0,10), class = "b"),
+    prior(exponential(1), class = "sigma")
+  ),
+  chains = 4, iter = 4000, warmup = 1000, seed = 1234, cores = 4
+)
+
+post_reg <- as_draws_matrix(bayes_model_2019)
+# Columns typically: "b_Intercept", "b_mh5_pred", "b_smk_pred", "sigma"
+# Then map:
+# b_ols_j <- c(post_reg[k, "b_Intercept"], post_reg[k, "b_mh5_pred"], post_reg[k, "b_smk_pred"])
+
+
+
+set.seed(2025)
+
+# Column names to pull from draws_mat
+col_alpha_mh5 <- "alpha_mh5"
+col_alpha_smk <- "alpha_smkstat"
+mh5_betas_all <- grep("^beta_mh5\\[",   colnames(draws_mat), value = TRUE)
+smk_betas_all <- grep("^beta_smkstat\\[", colnames(draws_mat), value = TRUE)
+
+# Scenarios (stay in data.frame land to avoid data.table pitfalls)
+scenario1 <- as.data.frame(df_model) %>% mutate(smkstat_bar = 1, smkstat_lag_w = 1)
+scenario0 <- as.data.frame(df_model) %>% mutate(smkstat_bar = 0, smkstat_lag_w = 0)
+
+# Helper: compute mh5_pred, smk_pred, cesd_hat from one pair of (dynamite params, regression coefs)
+compute_pred <- function(df, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j) {
+  # Ensure numeric matrices
+  X_mh5 <- df[, names(beta_mh5_vec_j), drop = FALSE] %>% mutate(across(everything(), as.numeric)) %>% as.matrix()
+  X_smk <- df[, names(beta_smk_vec_j), drop = FALSE] %>% mutate(across(everything(), as.numeric)) %>% as.matrix()
+  
+  mh5_pred <- as.numeric(alpha_mh5_j + X_mh5 %*% beta_mh5_vec_j)
+  smk_pred <- plogis(as.numeric(alpha_smk_j + X_smk %*% beta_smk_vec_j))
+  cesd_hat <- as.numeric(b_ols_j[1] + b_ols_j[2]*mh5_pred + b_ols_j[3]*smk_pred)
+  
+  tibble::tibble(PUBID_1997 = df$PUBID_1997, cesd_hat = cesd_hat)
+}
+
+# Draw counts
+R <- 500L
+idx_dyn <- sample(seq_len(nrow(draws_mat)), size = R, replace = FALSE)
+idx_reg <- sample(seq_len(nrow(post_reg)),  size = R, replace = TRUE)  # regression draws
+
+delta_means <- numeric(R)
+
+for (r in seq_len(R)) {
+  j <- idx_dyn[r]
+  k <- idx_reg[r]
+  
+  # --- Dynamite parameters (FORCE to numeric scalars/vectors)
+  alpha_mh5_j <- as.numeric(draws_mat[j, col_alpha_mh5])
+  alpha_smk_j <- as.numeric(draws_mat[j, col_alpha_smk])
+  
+  # Align beta vectors to your predictor order
+  # (We expect 6; if not, clamp using min(...) )
+  n_mh5 <- min(length(mh5_betas_all), length(vars_mh5))
+  n_smk <- min(length(smk_betas_all), length(vars_smk))
+  
+  beta_mh5_vec_j <- as.numeric(draws_mat[j, mh5_betas_all[1:n_mh5]])
+  beta_smk_vec_j <- as.numeric(draws_mat[j, smk_betas_all[1:n_smk]])
+  names(beta_mh5_vec_j) <- vars_mh5[1:n_mh5]
+  names(beta_smk_vec_j) <- vars_smk[1:n_smk]
+  
+  # --- Regression coefficients (one posterior draw)
+  b_ols_j <- c(
+    post_reg[k, "b_Intercept"],
+    post_reg[k, "b_mh5_pred"],
+    post_reg[k, "b_smk_pred"]
+  )
+  
+  # --- Predictions in both worlds
+  p1 <- compute_pred(scenario1, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j)
+  p0 <- compute_pred(scenario0, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_ols_j)
+  
+  # Average within person; align IDs across scenarios
+  p1_person <- p1 %>% group_by(PUBID_1997) %>% summarise(cesd_hat_mean = mean(cesd_hat), .groups = "drop")
+  p0_person <- p0 %>% group_by(PUBID_1997) %>% summarise(cesd_hat_mean = mean(cesd_hat), .groups = "drop")
+  common_ids <- intersect(p1_person$PUBID_1997, p0_person$PUBID_1997)
+  if (length(common_ids) == 0L) { delta_means[r] <- NA_real_; next }
+  
+  cf_df <- inner_join(p1_person, p0_person, by = "PUBID_1997", suffix = c("_smoke1", "_smoke0")) %>%
+    mutate(delta = cesd_hat_mean_smoke1 - cesd_hat_mean_smoke0)
+  
+  delta_means[r] <- mean(cf_df$delta, na.rm = TRUE)
+}
+
+delta_means <- delta_means[!is.na(delta_means)]
+ci_delta <- quantile(delta_means, c(0.025, 0.975))
+mean_delta <- mean(delta_means)
+
+c(mean = mean_delta, `2.5%` = ci_delta[1], `97.5%` = ci_delta[2])
+
+save.image("~/Documents/NLSY/males_post.RData")
+
