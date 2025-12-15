@@ -96,3 +96,94 @@ ren CV_AGE_12_31_96_1997 age_in_1996
 order PUBID_1997 sex age_in_1996 pct_peer_smk
 
 save "C:\Users\llb296\OneDrive - University of Saskatchewan\Documents\Smk_Depression\smk_status_dep_revised.dta", replace
+
+####################################Here, split the sample into males and females#########################################
+####################################Use R from here on####################################################################
+setwd("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/Smk_Depression")
+library(haven)
+
+smk_status_dep_revised <- read_dta("smk_status_dep_revised.dta")
+
+smk_status_dep_revised <-zap_formats(smk_status_dep_revised)
+smk_status_dep_revised <-zap_labels(smk_status_dep_revised)
+smk_status_dep_revised <-zap_label(smk_status_dep_revised)
+
+save(smk_status_dep_revised, file = "smk_status_dep_revised.RData")
+
+##############Process data here to long format###############
+#Create a time-varying age variable in 2-year intervals
+
+library(dplyr)
+library(purrr)
+
+
+
+years <- seq(2000, 2010, by = 2)
+
+smk_status_dep_revised <- smk_status_dep_revised %>%
+  bind_cols(
+    map_dfc(years, ~ smk_status_dep_revised$age_in_1996 + (.x - 1996)) %>%
+      set_names(paste0("age_", years))
+  )
+
+lim_data <- smk_status_dep_revised %>%
+  select(
+    PUBID_1997, sex, pct_peer_smk,
+    matches("_(2000|2002|2004|2006|2008|2010)$")
+  )
+  
+#Summaryize ages at different years
+summary(
+  lim_data %>% 
+    select(matches("^age_20(00|02|04|06|08|10)$"))
+)
+
+###Recode and Label sex###
+library(dplyr)
+lim_data <- lim_data %>%
+  mutate(male = factor(if_else(sex==1,1,0),
+                       levels = c(0,1),
+                       labels = c("Female", "Male")))
+lim_data$sex <- NULL
+
+###Set age to 2000 value
+lim_data <- lim_data %>%
+  mutate(age = age_2000)
+
+#remove the age series
+
+lim_data <- lim_data %>%
+  select(-c(age_2000, age_2002,age_2004, age_2006, age_2008, age_2010 ))
+
+
+#Reshape to long format using age as the time variable
+
+library(tidyr)
+lim_data_long <- lim_data %>%
+pivot_longer(
+  cols = matches("^(mh5|smkstat)_\\d{4}$"),  # select columns like mh5_2000 or smkstat_2000
+  names_to = c(".value", "year"),            # split names into variable and year
+  names_pattern = "(mh5|smkstat)_(\\d{4})"   # regex to extract variable type and year
+)
+
+#Remove NA's for covariate
+lim_data_long <- lim_data_long %>%
+  filter(!is.na(pct_peer_smk))%>%
+  mutate(year = as.numeric(year)) %>%          # convert year to numeric
+  arrange(PUBID_1997, year)                    # sort by ID and year
+
+
+###Split by sex
+
+lim_data_long_males <- lim_data_long %>%
+                      filter(male=="Male") %>%
+                      select(-male)
+
+lim_data_long_females <-lim_data_long %>% 
+                      filter(male=="Female") %>%
+                      select(-male)
+
+#Export the males and females to separate RData files
+
+save(lim_data_long_males, file="nlsy_males_long.RData")
+save(lim_data_long_females, file="nlsy_females_long.RData")
