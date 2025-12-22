@@ -1,0 +1,24 @@
+
+
+lim_data_long_males <- lim_data_long_males %>%
+  arrange(PUBID_1997, year) %>%
+  group_by(PUBID_1997) %>%
+  mutate(
+    # Lags
+    smkstat_lag = lag(smkstat, default = 0),
+    mh5_lag     = lag(mh5,     default = 15),
+
+    # Person means (between-person components)
+    smkstat_bar = mean(smkstat, na.rm = TRUE),
+    mh5_bar     = mean(mh5,     na.rm = TRUE),
+
+    # Within-person deviations (raw units)
+    smkstat_lag_w = smkstat_lag - smkstat_bar,
+    mh5_lag_w     = mh5_lag     - mh5_bar
+  ) %>%
+  ungroup() %>%
+  
+  # ---- STANDARDIZE WITHIN-PERSON MH ----
+  mutate(
+    mh5_lag_w_z = as.numeric(scale(mh5_lag_w))
+  )
