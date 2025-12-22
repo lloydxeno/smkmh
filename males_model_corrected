@@ -4,7 +4,6 @@ library(dplyr)
 ## Load male data
 load("nlsy_males_long.RData")   # adjust filename if needed
 
-
 lim_data_long_males <- lim_data_long_males %>%
   arrange(PUBID_1997, year) %>%
   group_by(PUBID_1997) %>%
@@ -14,35 +13,38 @@ lim_data_long_males <- lim_data_long_males %>%
     mh5_lag     = lag(mh5,     default = 15),
 
     # Person means (between-person components)
-    smkstat_bar = mean(smkstat, na.rm = TRUE),
-    mh5_bar     = mean(mh5,     na.rm = TRUE),
+    smkstat_bar = mean(smkstat, na.rm = TRUE),   # 0–1 proportion smoked
+    mh5_bar     = mean(mh5,     na.rm = TRUE),   # raw MHI-5 mean
 
-    # Within-person deviations (raw units)
+    # Within-person deviations
     smkstat_lag_w = smkstat_lag - smkstat_bar,
     mh5_lag_w     = mh5_lag     - mh5_bar
   ) %>%
   ungroup() %>%
-  
-  # ---- STANDARDIZE WITHIN-PERSON MH ----
   mutate(
-    mh5_lag_w_z = as.numeric(scale(mh5_lag_w))
+    # Standardize within-person MH deviations (across all person-years)
+    mh5_lag_w_z = as.numeric(scale(mh5_lag_w)),
+
+    # Standardize between-person MH means (across persons; repeated per row)
+    mh5_bar_z   = as.numeric(scale(mh5_bar))
   )
 
-  # ---- NOW USE STANDARDIZED MH Score in the FORMULA ----
-model_formula <- 
+model_formula <-
   # Smoking (Bernoulli)
   obs(
-    smkstat ~ smkstat_lag_w + mh5_lag_w_z + smkstat_bar + mh5_bar +
+    smkstat ~ smkstat_lag_w + mh5_lag_w_z + smkstat_bar + mh5_bar_z +
       pct_peer_smk + age + random(~1),
     family = "bernoulli"
   ) +
-  
   # Mental health (Gaussian)
   obs(
-    mh5 ~ mh5_lag_w_z + smkstat_lag_w + smkstat_bar + mh5_bar +
+    mh5 ~ mh5_lag_w_z + smkstat_lag_w + smkstat_bar + mh5_bar_z +
       pct_peer_smk + age + random(~1),
     family = "gaussian"
   )
+
+
+## --------- Chaiton-based priors (males), sign-corrected for MHI-5 (higher = better MH) ---------
 ## Get default priors for the male data structure
 required_priors_male <- get_priors(
   model_formula,
@@ -53,44 +55,63 @@ required_priors_male <- get_priors(
 
 p_male <- required_priors_male
 
-## --------- Chaiton-based priors (males), sign-corrected for MHI-5 (higher = better MH) ---------
-## IMPORTANT:
-## - If you standardized the within-person MH term, your parameter name will be beta_*_mh5_lag_w_z
-##   (replace accordingly).
-## - Between-person (bar) effects are set weaker (smaller mean, larger SD) than within-person effects.
+## Helper: safely set priors by regex pattern
+set_prior <- function(prior_df, pattern, prior_string) {
+  idx <- grep(pattern, prior_df$parameter)
+  if (length(idx) == 0) {
+    stop(
+      paste0(
+        "No parameters matched pattern: ", pattern, "\n",
+        "Closest candidates:\n  ",
+        paste(grep(gsub("\\\\b", "", pattern), prior_df$parameter, value = TRUE), collapse = "\n  ")
+      ),
+      call. = FALSE
+    )
+  }
+  prior_df$prior[idx] <- prior_string
+  prior_df
+}
+
+## ----------------- Priors (sign-corrected; between-person weaker) -----------------
+## Notes:
+## - mh5_lag_w_z and mh5_bar_z are standardized => coefficients are per 1 SD increase in MH (better MH).
+## - Therefore MH -> smoking should be NEGATIVE.
+## - Smoking -> MH should be NEGATIVE because smoking predicts worse MH => lower MHI-5.
 
 ## Smoking (Bernoulli)
-p_male$prior[p_male$parameter == "alpha_smkstat"]              <- "normal(-2, 1.0)"       # baseline smoking log-odds low
-p_male$prior[p_male$parameter == "beta_smkstat_smkstat_lag_w"] <- "normal(1.0, 0.5)"      # within-person persistence
+p_male <- set_prior(p_male, "^alpha_smkstat$",                     "normal(-2, 1.0)")
+p_male <- set_prior(p_male, "^beta_smkstat_smkstat_lag_w$",        "normal(1.0, 0.5)")     # within-person persistence
+p_male <- set_prior(p_male, "^beta_smkstat_smkstat_bar$",          "normal(0.4, 0.6)")     # weaker between-person persistence
 
-## MH (higher=better) -> later smoking should be NEGATIVE
-p_male$prior[p_male$parameter == "beta_smkstat_mh5_lag_w"]     <- "normal(-0.34, 0.2)"    # within-person MH -> smoking
+## MH -> later smoking (within-person, standardized MH): negative, moderately informative
+p_male <- set_prior(p_male, "^beta_smkstat_mh5_lag_w_z$",          "normal(-0.34, 0.25)")
 
-## Between-person persistence / association: weaker
-p_male$prior[p_male$parameter == "beta_smkstat_smkstat_bar"]   <- "normal(0.5, 0.5)"      # weaker than within-person
-p_male$prior[p_male$parameter == "beta_smkstat_mh5_bar"]       <- "normal(-0.10, 0.2)"    # weaker between-person MH -> smoking
+## MH -> later smoking (between-person mean MH): weaker than within-person
+p_male <- set_prior(p_male, "^beta_smkstat_mh5_bar_z$",            "normal(-0.10, 0.35)")
 
-p_male$prior[p_male$parameter == "beta_smkstat_pct_peer_smk"]  <- "normal(0.10, 0.05)"    # peer smoking
-p_male$prior[p_male$parameter == "beta_smkstat_age"]           <- "normal(0, 0.5)"
-p_male$prior[p_male$parameter == "sigma_nu_smkstat_alpha"]     <- "normal(0, 1)"
+p_male <- set_prior(p_male, "^beta_smkstat_pct_peer_smk$",         "normal(0.10, 0.05)")
+p_male <- set_prior(p_male, "^beta_smkstat_age$",                  "normal(0, 0.5)")
+p_male <- set_prior(p_male, "^sigma_nu_smkstat_alpha$",            "normal(0, 1)")
 
 ## Mental health (Gaussian)
-p_male$prior[p_male$parameter == "alpha_mh5"]                  <- "normal(15, 3)"         # around mean MH
-p_male$prior[p_male$parameter == "beta_mh5_mh5_lag_w"]         <- "normal(0.6, 0.1)"      # within-person autocorrelation
+p_male <- set_prior(p_male, "^alpha_mh5$",                         "normal(15, 3)")
 
-## Smoking -> later MH should be NEGATIVE (worse MH => lower MHI-5)
-p_male$prior[p_male$parameter == "beta_mh5_smkstat_lag_w"]     <- "normal(-0.55, 0.2)"    # within-person smoking -> MH
+## With MH standardized predictors, a slightly broader AR prior is safer than 0.6±0.1
+p_male <- set_prior(p_male, "^beta_mh5_mh5_lag_w_z$",              "normal(0.5, 0.25)")    # within-person AR (per 1 SD)
+p_male <- set_prior(p_male, "^beta_mh5_mh5_bar_z$",                "normal(0.25, 0.25)")   # weaker between-person stability
 
-## Between-person MH stability / association: weaker
-p_male$prior[p_male$parameter == "beta_mh5_mh5_bar"]           <- "normal(0.3, 0.2)"      # weaker than within-person
-p_male$prior[p_male$parameter == "beta_mh5_smkstat_bar"]       <- "normal(-0.15, 0.2)"    # weaker between-person smoking -> MH
+## Smoking -> later MH (MHI-5): negative
+p_male <- set_prior(p_male, "^beta_mh5_smkstat_lag_w$",            "normal(-0.55, 0.25)")  # within-person smoking -> MH
 
-p_male$prior[p_male$parameter == "beta_mh5_pct_peer_smk"]      <- "normal(0, 0.05)"
-p_male$prior[p_male$parameter == "beta_mh5_age"]               <- "normal(0, 1.0)"
-p_male$prior[p_male$parameter == "sigma_mh5"]                  <- "exponential(0.1)"
+## Between-person smoking -> MH: weaker than within-person
+p_male <- set_prior(p_male, "^beta_mh5_smkstat_bar$",              "normal(-0.15, 0.35)")
+
+p_male <- set_prior(p_male, "^beta_mh5_pct_peer_smk$",             "normal(0, 0.05)")
+p_male <- set_prior(p_male, "^beta_mh5_age$",                      "normal(0, 1.0)")
+p_male <- set_prior(p_male, "^sigma_mh5$",                         "exponential(0.1)")
 
 ## Random effect correlation structure
-p_male$prior[p_male$parameter == "L_nu"] <- "lkj_corr_cholesky(2)"
+p_male <- set_prior(p_male, "^L_nu$",                              "lkj_corr_cholesky(2)")
 
 required_priors_male <- p_male
 
