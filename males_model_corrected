@@ -1,3 +1,8 @@
+library(dynamite)
+library(dplyr)
+
+## Load male data
+load("nlsy_males_long.RData")   # adjust filename if needed
 
 
 lim_data_long_males <- lim_data_long_males %>%
@@ -21,4 +26,20 @@ lim_data_long_males <- lim_data_long_males %>%
   # ---- STANDARDIZE WITHIN-PERSON MH ----
   mutate(
     mh5_lag_w_z = as.numeric(scale(mh5_lag_w))
+  )
+
+  # ---- NOW USE STANDARDIZED MH Score in the FORMULA ----
+model_formula <- 
+  # Smoking (Bernoulli)
+  obs(
+    smkstat ~ smkstat_lag_w + mh5_lag_w_z + smkstat_bar + mh5_bar +
+      pct_peer_smk + age + random(~1),
+    family = "bernoulli"
+  ) +
+  
+  # Mental health (Gaussian)
+  obs(
+    mh5 ~ mh5_lag_w_z + smkstat_lag_w + smkstat_bar + mh5_bar +
+      pct_peer_smk + age + random(~1),
+    family = "gaussian"
   )
