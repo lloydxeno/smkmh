@@ -1,1 +1,262 @@
+load("~/Documents/NLSY/male_model_corrected.RData")
+
+
+## ---- Packages ----
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(haven)
+library(posterior)
+library(brms)
+
+## ---- 0) Posterior draws from dynamite ----
+draws_mat <- as_draws_matrix(smk_dep_males_fit$stanfit)
+
+# Predictor sets used in both longitudinal equations (UPDATED NAMES)
+vars_mh5 <- c("mh5_lag_w_z","smkstat_lag_w","smkstat_bar","mh5_bar_z","pct_peer_smk","age")
+vars_smk <- c("smkstat_lag_w","mh5_lag_w_z","smkstat_bar","mh5_bar_z","pct_peer_smk","age")
+
+col_alpha_mh5 <- "alpha_mh5"
+col_alpha_smk <- "alpha_smkstat"
+
+## Detect beta naming convention in stanfit draws
+mh5_beta_pretty <- paste0("beta_mh5_", vars_mh5)
+smk_beta_pretty <- paste0("beta_smkstat_", vars_smk)
+
+has_pretty_mh5 <- all(mh5_beta_pretty %in% colnames(draws_mat))
+has_pretty_smk <- all(smk_beta_pretty %in% colnames(draws_mat))
+
+if (has_pretty_mh5) {
+  mh5_beta_cols <- mh5_beta_pretty
+} else {
+  mh5_beta_cols <- grep("^beta_mh5\\[", colnames(draws_mat), value = TRUE)
+}
+
+if (has_pretty_smk) {
+  smk_beta_cols <- smk_beta_pretty
+} else {
+  smk_beta_cols <- grep("^beta_smkstat\\[", colnames(draws_mat), value = TRUE)
+}
+
+# Fail-fast if we still can't find them
+if (length(mh5_beta_cols) < length(vars_mh5)) {
+  stop("Could not find enough mh5 beta columns in draws_mat. Found:\n",
+       paste(head(mh5_beta_cols, 20), collapse = "\n"),
+       "\n\nTry running:\n  colnames(draws_mat)[grep('^beta_mh5', colnames(draws_mat))]")
+}
+if (length(smk_beta_cols) < length(vars_smk)) {
+  stop("Could not find enough smkstat beta columns in draws_mat. Found:\n",
+       paste(head(smk_beta_cols, 20), collapse = "\n"),
+       "\n\nTry running:\n  colnames(draws_mat)[grep('^beta_smkstat', colnames(draws_mat))]")
+}
+
+
+## ---- 1) Read CES-D 2019 and merge into person-period dataset ----
+cesd_2019 <- read_dta("cesd_2019.dta") %>%
+  rename(cesd2019 = CV_CESD_SCORE_R19_2019) %>%
+  select(PUBID_1997, cesd2019)
+
+analysis_df <- inner_join(lim_data_long_males, cesd_2019, by = "PUBID_1997") %>%
+  mutate(
+    cesd2019_elevated = case_when(
+      is.na(cesd2019) ~ NA_integer_,
+      cesd2019 >= 16  ~ 1L,
+      TRUE            ~ 0L
+    )
+  )
+
+## ---- 2) Build person-level trajectories (mh5_pred, smk_pred) using posterior means ----
+summ <- summarise_draws(draws_mat, "mean")
+
+alpha_mh5_hat <- summ$mean[summ$variable == col_alpha_mh5]
+alpha_smk_hat <- summ$mean[summ$variable == col_alpha_smk]
+
+# Take the first K betas and name them according to vars_* order
+K_mh5 <- length(vars_mh5)
+K_smk <- length(vars_smk)
+
+beta_mh5_hat <- summ$mean[match(mh5_beta_cols[1:K_mh5], summ$variable)]
+names(beta_mh5_hat) <- vars_mh5
+
+beta_smk_hat <- summ$mean[match(smk_beta_cols[1:K_smk], summ$variable)]
+names(beta_smk_hat) <- vars_smk
+
+# Design matrices (person-period)
+X_mh5 <- analysis_df %>%
+  select(all_of(vars_mh5)) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.matrix()
+
+X_smk <- analysis_df %>%
+  select(all_of(vars_smk)) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.matrix()
+
+analysis_df <- analysis_df %>%
+  mutate(
+    mh5_pred_pp = as.numeric(alpha_mh5_hat + X_mh5 %*% beta_mh5_hat),
+    smk_pred_pp = plogis(as.numeric(alpha_smk_hat + X_smk %*% beta_smk_hat))
+  )
+
+analysis_person <- analysis_df %>%
+  group_by(PUBID_1997) %>%
+  summarise(
+    cesd2019          = dplyr::first(cesd2019),
+    cesd2019_elevated = dplyr::first(cesd2019_elevated),
+    mh5_pred          = mean(mh5_pred_pp, na.rm = TRUE),
+    smk_pred          = mean(smk_pred_pp, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+## ---- 3) Distal outcome model: elevated CES-D (logistic) ----
+bayes_model_2019 <- brm(
+  cesd2019_elevated ~ mh5_pred + smk_pred,
+  data = analysis_person,
+  family = bernoulli(link = "logit"),
+  prior = c(
+    prior(normal(0, 2.5), class = "Intercept"),
+    prior(normal(0, 2.5), class = "b")
+  ),
+  chains = 4, iter = 4000, warmup = 1000,
+  seed = 1234, cores = 4
+)
+
+post_reg <- as_draws_matrix(bayes_model_2019)
+---
+## ---- 4) Counterfactual scenarios (steady-state always vs never) ----
+# Steady-state means: within-person deviation is 0, and trait (bar) sets the level.
+# So smkstat_lag = smkstat_bar + smkstat_lag_w stays in [0,1].
+
+scenario1 <- analysis_df %>% mutate(smkstat_bar = 1, smkstat_lag_w = 0)
+scenario0 <- analysis_df %>% mutate(smkstat_bar = 0, smkstat_lag_w = 0)
+
+
+# Optional sanity check: implied lag is within bounds
+# (Only if smkstat_lag is actually used elsewhere; your model uses smkstat_lag_w directly,
+# but this check reassures that the decomposition is coherent.)
+range(with(scenario1, smkstat_bar + smkstat_lag_w), na.rm = TRUE)  # should be 1,1
+range(with(scenario0, smkstat_bar + smkstat_lag_w), na.rm = TRUE)  # should be 0,0
+
+
+compute_p <- function(df,
+                      alpha_mh5_j, beta_mh5_vec_j,
+                      alpha_smk_j, beta_smk_vec_j,
+                      b_logit_j) {
+  
+  X_mh5 <- df[, names(beta_mh5_vec_j), drop = FALSE] %>%
+    mutate(across(everything(), as.numeric)) %>% as.matrix()
+  
+  X_smk <- df[, names(beta_smk_vec_j), drop = FALSE] %>%
+    mutate(across(everything(), as.numeric)) %>% as.matrix()
+  
+  mh5_pp <- as.numeric(alpha_mh5_j + X_mh5 %*% beta_mh5_vec_j)
+  smk_pp <- plogis(as.numeric(alpha_smk_j + X_smk %*% beta_smk_vec_j))
+  
+  traj <- tibble::tibble(PUBID_1997 = df$PUBID_1997,
+                         mh5_pp = mh5_pp,
+                         smk_pp = smk_pp) %>%
+    group_by(PUBID_1997) %>%
+    summarise(
+      mh5_pred = mean(mh5_pp, na.rm = TRUE),
+      smk_pred = mean(smk_pp, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  eta <- as.numeric(b_logit_j[1] + b_logit_j[2] * traj$mh5_pred + b_logit_j[3] * traj$smk_pred)
+  traj$p_elev <- plogis(eta)
+  traj
+}
+
+## ---- 5) Monte Carlo: marginal OR under (always smoke) vs (never smoke) ----
+R <- 500L
+set.seed(2025)
+
+idx_dyn <- sample(seq_len(nrow(draws_mat)), size = R, replace = FALSE)
+idx_reg <- sample(seq_len(nrow(post_reg)),  size = R, replace = TRUE)
+
+OR_draws <- numeric(R)
+
+for (r in seq_len(R)) {
+  j <- idx_dyn[r]
+  k <- idx_reg[r]
+  
+  alpha_mh5_j <- as.numeric(draws_mat[j, col_alpha_mh5])
+  alpha_smk_j <- as.numeric(draws_mat[j, col_alpha_smk])
+  
+  beta_mh5_vec_j <- as.numeric(draws_mat[j, mh5_beta_cols[1:K_mh5]])
+  beta_smk_vec_j <- as.numeric(draws_mat[j, smk_beta_cols[1:K_smk]])
+  names(beta_mh5_vec_j) <- vars_mh5
+  names(beta_smk_vec_j) <- vars_smk
+  
+  
+  b_logit_j <- c(
+    as.numeric(post_reg[k, "b_Intercept"]),
+    as.numeric(post_reg[k, "b_mh5_pred"]),
+    as.numeric(post_reg[k, "b_smk_pred"])
+  )
+  
+  p1_df <- compute_p(scenario1, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_logit_j)
+  p0_df <- compute_p(scenario0, alpha_mh5_j, beta_mh5_vec_j, alpha_smk_j, beta_smk_vec_j, b_logit_j)
+  
+  cf <- inner_join(
+    p1_df %>% select(PUBID_1997, p1 = p_elev),
+    p0_df %>% select(PUBID_1997, p0 = p_elev),
+    by = "PUBID_1997"
+  )
+  
+  p1_bar <- mean(cf$p1, na.rm = TRUE)
+  p0_bar <- mean(cf$p0, na.rm = TRUE)
+  
+  if (p1_bar <= 0 || p1_bar >= 1 || p0_bar <= 0 || p0_bar >= 1) {
+    OR_draws[r] <- NA_real_
+  } else {
+    OR_draws[r] <- (p1_bar / (1 - p1_bar)) / (p0_bar / (1 - p0_bar))
+  }
+}
+
+OR_draws <- OR_draws[is.finite(OR_draws) & !is.na(OR_draws)]
+c(OR_median = median(OR_draws),
+  OR_2.5    = unname(quantile(OR_draws, 0.025)),
+  OR_97.5   = unname(quantile(OR_draws, 0.975)))
+
+## 6) Cleanup and save once ----
+rm(smk_dep_males_fit, lim_data_long_males)
+gc()
+save.image("~/Documents/NLSY/Corrected/male_cesd_binary_corrected.RData")
+
+## 7) Calculate the posterior prob that OR > 1
+P_OR_gt_1 <- mean(OR_draws > 1)
+
+P_OR_gt_1
+
+### 8 Calculate Monte Carlo standard errors
+R_eff <- length(OR_draws)
+
+MCSE <- sqrt(P_OR_gt_1 * (1 - P_OR_gt_1) / R_eff)
+
+c(P_OR_gt_1 = P_OR_gt_1, MCSE = MCSE)
+
+### 9 Perform E-value analysis
+## --- E-value function (for a risk ratio / OR scale) ---
+Evalue_OR <- function(OR) {
+  OR2 <- ifelse(OR < 1, 1 / OR, OR)
+  OR2 + sqrt(OR2 * (OR2 - 1))
+}
+
+## --- Summarise OR_draws ---
+OR_med <- median(OR_draws, na.rm = TRUE)
+OR_ci  <- unname(quantile(OR_draws, probs = c(0.025, 0.975), na.rm = TRUE))
+
+## --- E-values ---
+E_point <- Evalue_OR(OR_med)
+E_low   <- Evalue_OR(OR_ci[1])    # This is not relevent if lower boundary is < 1.
+
+c(
+  OR_median = OR_med,
+  OR_2.5    = OR_ci[1],
+  OR_97.5   = OR_ci[2],
+  E_value_point = E_point,
+  E_value_lower = E_low
+)
+
 
