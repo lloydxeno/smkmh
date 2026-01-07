@@ -122,6 +122,11 @@ bayes_model_2019 <- brm(
 )
 
 post_reg <- as_draws_matrix(bayes_model_2019)
+h <- hypothesis(bayes_model_2019, "smk_pred = 0", prob = 0.90)
+
+h_tab <- h$hypothesis
+exp(h_tab[, c("Estimate", "CI.Lower", "CI.Upper")])
+
 ---
 ## ---- 4) Counterfactual scenarios (steady-state always vs never) ----
 # Steady-state means: within-person deviation is 0, and trait (bar) sets the level.
