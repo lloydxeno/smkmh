@@ -2,7 +2,7 @@ library(dynamite)
 library(dplyr)
 
 ## Load male data
-load("nlsy_males_long.RData")   # adjust filename if needed
+load("nlsy_males_long.RData")
 
 lim_data_long_males <- lim_data_long_males %>%
   arrange(PUBID_1997, year) %>%
@@ -11,11 +11,11 @@ lim_data_long_males <- lim_data_long_males %>%
     # Lags
     smkstat_lag = lag(smkstat, default = 0),
     mh5_lag     = lag(mh5,     default = 15),
-
+    
     # Person means (between-person components)
     smkstat_bar = mean(smkstat, na.rm = TRUE),   # 0–1 proportion smoked
     mh5_bar     = mean(mh5,     na.rm = TRUE),   # raw MHI-5 mean
-
+    
     # Within-person deviations
     smkstat_lag_w = smkstat_lag - smkstat_bar,
     mh5_lag_w     = mh5_lag     - mh5_bar
@@ -24,7 +24,7 @@ lim_data_long_males <- lim_data_long_males %>%
   mutate(
     # Standardize within-person MH deviations (across all person-years)
     mh5_lag_w_z = as.numeric(scale(mh5_lag_w)),
-
+    
     # Standardize between-person MH means (across persons; repeated per row)
     mh5_bar_z   = as.numeric(scale(mh5_bar))
   )
@@ -131,3 +131,5 @@ smk_dep_males_fit <- dynamite(
 )
 
 save.image("male_model_corrected.RData")
+
+
