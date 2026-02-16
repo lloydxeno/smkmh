@@ -255,3 +255,4 @@ c(
   E_value_point = E_point,
   E_value_lower = E_low
 )
+save.image("female_cesd_binary_corrected.RData")
