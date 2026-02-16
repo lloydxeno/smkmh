@@ -1,5 +1,5 @@
-load("~/Documents/NLSY/male_model_corrected.RData")
-
+setwd("~/NLSY/NLSY_Feb_2026")
+load("male_model_corrected.RData")
 
 ## ---- Packages ----
 library(dplyr)
@@ -127,7 +127,7 @@ h <- hypothesis(bayes_model_2019, "smk_pred = 0", prob = 0.90)
 h_tab <- h$hypothesis
 exp(h_tab[, c("Estimate", "CI.Lower", "CI.Upper")])
 
----
+
 ## ---- 4) Counterfactual scenarios (steady-state always vs never) ----
 # Steady-state means: within-person deviation is 0, and trait (bar) sets the level.
 # So smkstat_lag = smkstat_bar + smkstat_lag_w stays in [0,1].
@@ -264,4 +264,4 @@ c(
   E_value_lower = E_low
 )
 
-
+save.image("male_cesd_binary_corrected.RData")
