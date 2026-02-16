@@ -83,8 +83,8 @@ p_male <- set_prior(p_male, "^alpha_smkstat$",                     "normal(-2, 1
 p_male <- set_prior(p_male, "^beta_smkstat_smkstat_lag_w$",        "normal(1.0, 0.5)")     # within-person persistence
 p_male <- set_prior(p_male, "^beta_smkstat_smkstat_bar$",          "normal(0.4, 0.6)")     # weaker between-person persistence
 
-## MH -> later smoking (within-person, standardized MH): negative, moderately informative
-p_male <- set_prior(p_male, "^beta_smkstat_mh5_lag_w_z$",          "normal(-0.34, 0.25)")
+## MH -> later smoking (within-person, standardized MH): corrected because OR priors cannot be rescaled to continuous (Santtu comment)
+p_male <- set_prior(p_male, "^beta_smkstat_mh5_lag_w_z$",          "normal(0, 1)")
 
 ## MH -> later smoking (between-person mean MH): weaker than within-person
 p_male <- set_prior(p_male, "^beta_smkstat_mh5_bar_z$",            "normal(-0.10, 0.35)")
@@ -100,8 +100,8 @@ p_male <- set_prior(p_male, "^alpha_mh5$",                         "normal(15, 3
 p_male <- set_prior(p_male, "^beta_mh5_mh5_lag_w_z$",              "normal(0.5, 0.25)")    # within-person AR (per 1 SD)
 p_male <- set_prior(p_male, "^beta_mh5_mh5_bar_z$",                "normal(0.25, 0.25)")   # weaker between-person stability
 
-## Smoking -> later MH (MHI-5): negative
-p_male <- set_prior(p_male, "^beta_mh5_smkstat_lag_w$",            "normal(-0.55, 0.25)")  # within-person smoking -> MH
+## Smoking -> later MH (MHI-5): corrected because OR priors cannot be rescaled to continuous (Santtu comment)
+p_male <- set_prior(p_male, "^beta_mh5_smkstat_lag_w$",            "normal(0, 1)")  # within-person smoking -> MH
 
 ## Between-person smoking -> MH: weaker than within-person
 p_male <- set_prior(p_male, "^beta_mh5_smkstat_bar$",              "normal(-0.15, 0.35)")
@@ -130,6 +130,5 @@ smk_dep_males_fit <- dynamite(
   refresh           = 100
 )
 
+
 save.image("male_model_corrected.RData")
-
-
