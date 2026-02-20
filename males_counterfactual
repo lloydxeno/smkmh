@@ -8,6 +8,16 @@ library(stringr)
 library(haven)
 library(posterior)
 library(brms)
+set.seed(123)
+## ---- Helpers: 90% CrI everywhere ----
+CrI <- 0.90
+qi  <- (1 - CrI) / 2
+qlo <- qi
+qhi <- 1 - qi
+
+qCrI <- function(x, probs = c(qlo, qhi), na.rm = TRUE) {
+  unname(quantile(x, probs = probs, na.rm = na.rm))
+}
 
 ## ---- 0) Posterior draws from dynamite ----
 draws_mat <- as_draws_matrix(smk_dep_males_fit$stanfit)
@@ -50,7 +60,6 @@ if (length(smk_beta_cols) < length(vars_smk)) {
        "\n\nTry running:\n  colnames(draws_mat)[grep('^beta_smkstat', colnames(draws_mat))]")
 }
 
-
 ## ---- 1) Read CES-D 2019 and merge into person-period dataset ----
 cesd_2019 <- read_dta("cesd_2019.dta") %>%
   rename(cesd2019 = CV_CESD_SCORE_R19_2019) %>%
@@ -71,7 +80,6 @@ summ <- summarise_draws(draws_mat, "mean")
 alpha_mh5_hat <- summ$mean[summ$variable == col_alpha_mh5]
 alpha_smk_hat <- summ$mean[summ$variable == col_alpha_smk]
 
-# Take the first K betas and name them according to vars_* order
 K_mh5 <- length(vars_mh5)
 K_smk <- length(vars_smk)
 
@@ -81,7 +89,6 @@ names(beta_mh5_hat) <- vars_mh5
 beta_smk_hat <- summ$mean[match(smk_beta_cols[1:K_smk], summ$variable)]
 names(beta_smk_hat) <- vars_smk
 
-# Design matrices (person-period)
 X_mh5 <- analysis_df %>%
   select(all_of(vars_mh5)) %>%
   mutate(across(everything(), as.numeric)) %>%
@@ -109,37 +116,37 @@ analysis_person <- analysis_df %>%
   )
 
 ## ---- 3) Distal outcome model: elevated CES-D (logistic) ----
+##------Now apply Chaiton's prior for smk_pred
 bayes_model_2019 <- brm(
   cesd2019_elevated ~ mh5_pred + smk_pred,
   data = analysis_person,
   family = bernoulli(link = "logit"),
   prior = c(
     prior(normal(0, 2.5), class = "Intercept"),
-    prior(normal(0, 2.5), class = "b")
+    prior(normal(0, 2.5), class = "b"),  # still applies to mh5_pred
+    prior(normal(log(1.73), 0.1525), class = "b", coef = "smk_pred")  # Chaiton prior
   ),
   chains = 4, iter = 4000, warmup = 1000,
   seed = 1234, cores = 4
 )
 
 post_reg <- as_draws_matrix(bayes_model_2019)
-h <- hypothesis(bayes_model_2019, c("mh5_pred = 0", "smk_pred = 0"))
+
+# Enforce 90% CrI in hypothesis() and exponentiation output
+h <- hypothesis(
+  bayes_model_2019,
+  c("mh5_pred = 0", "smk_pred = 0"),
+  ci = CrI
+)
+
 exp(h$hypothesis[, c("Estimate","CI.Lower","CI.Upper")])
 
-
 ## ---- 4) Counterfactual scenarios (steady-state always vs never) ----
-# Steady-state means: within-person deviation is 0, and trait (bar) sets the level.
-# So smkstat_lag = smkstat_bar + smkstat_lag_w stays in [0,1].
-
 scenario1 <- analysis_df %>% mutate(smkstat_bar = 1, smkstat_lag_w = 0)
 scenario0 <- analysis_df %>% mutate(smkstat_bar = 0, smkstat_lag_w = 0)
 
-
-# Optional sanity check: implied lag is within bounds
-# (Only if smkstat_lag is actually used elsewhere; your model uses smkstat_lag_w directly,
-# but this check reassures that the decomposition is coherent.)
-range(with(scenario1, smkstat_bar + smkstat_lag_w), na.rm = TRUE)  # should be 1,1
-range(with(scenario0, smkstat_bar + smkstat_lag_w), na.rm = TRUE)  # should be 0,0
-
+range(with(scenario1, smkstat_bar + smkstat_lag_w), na.rm = TRUE)
+range(with(scenario0, smkstat_bar + smkstat_lag_w), na.rm = TRUE)
 
 compute_p <- function(df,
                       alpha_mh5_j, beta_mh5_vec_j,
@@ -191,7 +198,6 @@ for (r in seq_len(R)) {
   names(beta_mh5_vec_j) <- vars_mh5
   names(beta_smk_vec_j) <- vars_smk
   
-  
   b_logit_j <- c(
     as.numeric(post_reg[k, "b_Intercept"]),
     as.numeric(post_reg[k, "b_mh5_pred"]),
@@ -218,48 +224,60 @@ for (r in seq_len(R)) {
 }
 
 OR_draws <- OR_draws[is.finite(OR_draws) & !is.na(OR_draws)]
-c(OR_median = median(OR_draws),
-  OR_2.5    = unname(quantile(OR_draws, 0.025)),
-  OR_97.5   = unname(quantile(OR_draws, 0.975)))
+
+c(
+  OR_median = median(OR_draws),
+  OR_low90  = qCrI(OR_draws)[1],
+  OR_high90 = qCrI(OR_draws)[2]
+)
 
 ## 6) Cleanup and save once ----
 rm(smk_dep_males_fit, lim_data_long_males)
 gc()
 save.image("~/Documents/NLSY/Corrected/male_cesd_binary_corrected.RData")
 
-## 7) Calculate the posterior prob that OR > 1
+## 7) Posterior prob that OR > 1
 P_OR_gt_1 <- mean(OR_draws > 1)
-
 P_OR_gt_1
 
-### 8 Calculate Monte Carlo standard errors
+## 8) Monte Carlo standard errors
 R_eff <- length(OR_draws)
-
 MCSE <- sqrt(P_OR_gt_1 * (1 - P_OR_gt_1) / R_eff)
-
 c(P_OR_gt_1 = P_OR_gt_1, MCSE = MCSE)
 
-### 9 Perform E-value analysis
-## --- E-value function (for a risk ratio / OR scale) ---
+## 9) E-value analysis
 Evalue_OR <- function(OR) {
   OR2 <- ifelse(OR < 1, 1 / OR, OR)
   OR2 + sqrt(OR2 * (OR2 - 1))
 }
 
-## --- Summarise OR_draws ---
 OR_med <- median(OR_draws, na.rm = TRUE)
-OR_ci  <- unname(quantile(OR_draws, probs = c(0.025, 0.975), na.rm = TRUE))
+OR_ci  <- qCrI(OR_draws)  # 90% CrI
 
-## --- E-values ---
 E_point <- Evalue_OR(OR_med)
-E_low   <- Evalue_OR(OR_ci[1])    # This is not relevent if lower boundary is < 1.
+E_low   <- Evalue_OR(OR_ci[1])  # if OR_ci[1] < 1, interpret with caution as usual
 
 c(
   OR_median = OR_med,
-  OR_2.5    = OR_ci[1],
-  OR_97.5   = OR_ci[2],
+  OR_low90  = OR_ci[1],
+  OR_high90 = OR_ci[2],
   E_value_point = E_point,
   E_value_lower = E_low
 )
 
 save.image("male_cesd_binary_corrected.RData")
+
+################Outputs########################
+# # Estimate  CI.Lower  CI.Upper
+# Estimate  CI.Lower  CI.Upper
+# 1 0.6544926 0.5725326 0.7506857
+# 2 1.7461619 1.3275002 2.2871564
+# 
+# # OR_median  OR_low90 OR_high90 
+# OR_median  OR_low90 OR_high90 
+# 1.674879  1.354142  2.003379 
+# #P_OR_gt_1
+# P_OR_gt_1      MCSE 
+# 1         0 
+# OR_median      OR_low90     OR_high90 E_value_point E_value_lower 
+# 1.674879      1.354142      2.003379      2.738054      2.046644 
