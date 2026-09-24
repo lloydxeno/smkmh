@@ -1,0 +1,56 @@
+library(dplyr)
+library(dynamite)
+
+
+#Take the observations that were used for fitting the model
+load("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/NLSY/NLSY_Feb_2026/male_model_corrected.RData")
+male_model_data <- as_tibble(smk_dep_males_fit$data)
+
+###################Take note of the destination folder NLSY/NLSY_Feb_2026#########################
+
+setwd("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/NLSY/NLSY_Feb_2026")
+saveRDS(male_model_data, "male_model_data.rds")
+
+load("C:/Users/llb296/OneDrive - University of Saskatchewan/Documents/NLSY/NLSY_Feb_2026/female_model_corrected.RData")
+female_model_data <- as_tibble(smk_dep_females_fit$data)
+saveRDS(female_model_data, "female_model_data.rds")
+
+###################Now take RDS files and combine M/F data########################################
+male_model_data <- readRDS("male_model_data.rds")
+female_model_data <-readRDS("female_model_data.rds")
+
+both_sexes <- rbind(female_model_data, male_model_data)
+
+#########################Calculate the Four Patterns#############################################
+
+person_patterns <- both_sexes %>%
+  select(PUBID_1997, year, smkstat) %>%
+  filter(!is.na(smkstat)) %>%
+  arrange(PUBID_1997, year) %>%
+  group_by(PUBID_1997) %>%
+  filter(n() >= 2) %>%  #Restrict to people with response to at least 2 waves
+  summarise(
+    n_observed_waves = n(),
+    always_1 = all(smkstat == 1),
+    always_0 = all(smkstat == 0),
+    any_0_to_1 = any(lag(smkstat) == 0 & smkstat == 1, na.rm = TRUE),
+    any_1_to_0 = any(lag(smkstat) == 1 & smkstat == 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pattern_summary <- person_patterns %>%
+  summarise(
+    eligible_people = n(),
+    n_always_1 = sum(always_1),
+    n_always_0 = sum(always_0),
+    n_any_0_to_1 = sum(any_0_to_1),
+    n_any_1_to_0 = sum(any_1_to_0)
+  ) %>%
+  mutate(
+    pct_always_1 = round(100 * n_always_1 / eligible_people, 1),
+    pct_always_0 = round(100 * n_always_0 / eligible_people, 1),
+    pct_any_0_to_1 = round(100 * n_any_0_to_1 / eligible_people, 1),
+    pct_any_1_to_0 = round(100 * n_any_1_to_0 / eligible_people, 1)
+  )
+
+pattern_summary
